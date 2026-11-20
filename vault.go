@@ -6,8 +6,6 @@ import (
 	"errors"
 	"strings"
 	"sync"
-
-	"github.com/google/uuid"
 	"github.com/gunesis-game/pulsyflux-stream"
 )
 
@@ -17,34 +15,29 @@ var ErrNilEventChannel = errors.New("vault: nil event channel")
 
 // VaultTokenStoreRequestedEvent asks the vault to store Token under Key.
 type VaultTokenStoreRequestedEvent struct {
-	RequestID uuid.UUID
 	Key       string
 	Token     string
 }
 
 // VaultTokenStoredEvent confirms that a store request was processed.
 type VaultTokenStoredEvent struct {
-	RequestID uuid.UUID
 	Key       string
 }
 
 // VaultTokenRequestedEvent asks the vault to look up the token associated with Key.
 // This is the request event consumed by pulsyflux-auth-stream.
 type VaultTokenRequestedEvent struct {
-	RequestID uuid.UUID
 	Key       string
 }
 
 // VaultTokenFoundEvent is the successful lookup response consumed by auth.
 type VaultTokenFoundEvent struct {
-	RequestID uuid.UUID
 	Key       string
 	Token     string
 }
 
 // VaultTokenNotFoundEvent is emitted when a requested key is absent.
 type VaultTokenNotFoundEvent struct {
-	RequestID uuid.UUID
 	Key       string
 }
 
@@ -143,7 +136,7 @@ func (v *Vault) handleStoreRequests(ctx context.Context, sub *stream.Subscriptio
 				return
 			}
 			request := event.Data
-			if request.RequestID == uuid.Nil || strings.TrimSpace(request.Key) == "" {
+			if strings.TrimSpace(request.Key) == "" {
 				continue
 			}
 
@@ -153,7 +146,7 @@ func (v *Vault) handleStoreRequests(ctx context.Context, sub *stream.Subscriptio
 
 			_ = v.VaultTokenStoredEvents.Publish(stream.Event[VaultTokenStoredEvent]{
 				Name: "vault.token.stored",
-				Data: VaultTokenStoredEvent{RequestID: request.RequestID, Key: request.Key},
+				Data: VaultTokenStoredEvent{Key: request.Key},
 			})
 		}
 	}
@@ -172,7 +165,7 @@ func (v *Vault) handleLookupRequests(ctx context.Context, sub *stream.Subscripti
 				return
 			}
 			request := event.Data
-			if request.RequestID == uuid.Nil || strings.TrimSpace(request.Key) == "" {
+			if strings.TrimSpace(request.Key) == "" {
 				continue
 			}
 
@@ -183,14 +176,14 @@ func (v *Vault) handleLookupRequests(ctx context.Context, sub *stream.Subscripti
 			if found {
 				_ = v.VaultTokenFoundEvents.Publish(stream.Event[VaultTokenFoundEvent]{
 					Name: "vault.token.found",
-					Data: VaultTokenFoundEvent{RequestID: request.RequestID, Key: request.Key, Token: token},
+					Data: VaultTokenFoundEvent{Key: request.Key, Token: token},
 				})
 				continue
 			}
 
 			_ = v.VaultTokenNotFoundEvents.Publish(stream.Event[VaultTokenNotFoundEvent]{
 				Name: "vault.token.not_found",
-				Data: VaultTokenNotFoundEvent{RequestID: request.RequestID, Key: request.Key},
+				Data: VaultTokenNotFoundEvent{Key: request.Key},
 			})
 		}
 	}
