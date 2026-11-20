@@ -35,20 +35,20 @@ The public API is:
 
 ### Events published to the vault
 
-- `VaultTokenStoreRequestedEvent`: `RequestID uuid.UUID`, `Key string`, `Token string`. Requests storing a token under a key.
-- `VaultTokenRequestedEvent`: `RequestID uuid.UUID`, `Key string`. Requests looking up a token by key. This is the shared auth-to-vault lookup contract.
+- `VaultTokenStoreRequestedEvent`: `Key string`, `Token string`. Requests storing a token under a key.
+- `VaultTokenRequestedEvent`: `Key string`. Requests looking up a token by key. This is the shared auth-to-vault lookup contract.
 
 ### Events published by the vault
 
-- `VaultTokenStoredEvent`: `RequestID uuid.UUID`, `Key string`. Confirms the store operation.
-- `VaultTokenFoundEvent`: `RequestID uuid.UUID`, `Key string`, `Token string`. Successful lookup response. This is consumed by auth.
-- `VaultTokenNotFoundEvent`: `RequestID uuid.UUID`, `Key string`. Missing lookup response. This is consumed by auth.
+- `VaultTokenStoredEvent`: `Key string`. Confirms the store operation.
+- `VaultTokenFoundEvent`: `Key string`, `Token string`. Successful lookup response. This is consumed by auth.
+- `VaultTokenNotFoundEvent`: `Key string`. Missing lookup response. This is consumed by auth.
 
 The auth integration names are intentionally exact and must remain stable:
 `VaultTokenRequestedEvent`, `VaultTokenFoundEvent`, and `VaultTokenNotFoundEvent`.
-Each includes a `RequestID` to correlate concurrent requests. Auth must subscribe to found/not-found responses and publish lookup requests using the same request ID. Do not correlate by arrival order or assume the next response belongs to the most recent request.
+The auth and vault event streams are registered on the same shared `EventChannel`, which establishes their logical relationship. No per-request identifier is part of these event payloads. The Auth integration must be critically tested to verify that the shared-channel event relationship is sufficient for the intended workflow.
 
-The request ID must be non-zero and the key must be non-empty. Callers must subscribe to response streams before publishing requests. Never log raw tokens, include them in errors, or expose them in event payloads that do not require the token. A found token is not automatically an authenticated/valid token; verification policy belongs to auth.
+The key must be non-empty. Callers must subscribe to response streams before publishing requests. Never log raw tokens, include them in errors, or expose them in event payloads that do not require the token. A found token is not automatically an authenticated/valid token; verification policy belongs to auth.
 
 ### Stream ownership
 
@@ -98,7 +98,7 @@ Any future addition of persistence, encryption, expiry, or distributed transport
 
 1. Inspect the current branch, files, recent commits, and open pull requests before editing.
 2. Inspect the pinned `pulsyflux-stream` dependency and verify `EventChannel`, stream registration, `Subscribe(ctx)`, subscription channels, event envelopes, and `Publish` signatures.
-3. Preserve the event-suffixed type naming convention and the exact auth integration event names/payload correlation.
+3. Preserve the event-suffixed type naming convention and the exact auth integration event names; do not add per-request identifiers.
 4. Add tests for storing, successful lookup, missing lookup, invalid requests, concurrent access, cancellation, closed streams, publish failures, and cleanup as appropriate.
 5. Run `gofmt`, `go test -race ./...`, `go vet ./...`, and `go build ./...`.
 6. Verify exported symbols and package documentation. Do not claim tests pass unless they have actually run successfully.
@@ -109,7 +109,7 @@ Any future addition of persistence, encryption, expiry, or distributed transport
 ## Collaboration preferences
 
 - Keep changes focused and follow the owner's Go design and corrections literally.
-- Use typed, event-suffixed domain payloads and explicit request correlation.
+- Use typed, event-suffixed domain payloads and the shared EventChannel relationship between component event streams; do not add per-request correlation identifiers.
 - Keep the auth-to-vault integration event names stable.
 - Avoid callbacks, anonymous callback handlers, generic handler layers, and unrelated abstractions.
 - Ask one concise clarification only when a material contract cannot be determined from repository code or this guide.
