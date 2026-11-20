@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
 	"github.com/gunesis-game/pulsyflux-stream"
 )
 
@@ -31,18 +29,16 @@ func TestStoreAndLookupEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer found.Close()
-
-	storeID := uuid.New()
 	if err := v.VaultTokenStoreRequestedEvents.Publish(stream.Event[VaultTokenStoreRequestedEvent]{
 		Name: "vault.token.store_requested",
-		Data: VaultTokenStoreRequestedEvent{RequestID: storeID, Key: "session-1", Token: "secret"},
+		Data: VaultTokenStoreRequestedEvent{Key: "session-1", Token: "secret"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case event := <-stored.Events():
-		if event.Data.RequestID != storeID || event.Data.Key != "session-1" {
+		if event.Data.Key != "session-1" {
 			t.Fatalf("unexpected stored event: %+v", event.Data)
 		}
 	case <-ctx.Done():
@@ -50,17 +46,16 @@ func TestStoreAndLookupEvents(t *testing.T) {
 	}
 
 	// This is the request/response contract used by pulsyflux-auth-stream.
-	lookupID := uuid.New()
 	if err := v.VaultTokenRequestedEvents.Publish(stream.Event[VaultTokenRequestedEvent]{
 		Name: "vault.token.requested",
-		Data: VaultTokenRequestedEvent{RequestID: lookupID, Key: "session-1"},
+		Data: VaultTokenRequestedEvent{Key: "session-1"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case event := <-found.Events():
-		if event.Data.RequestID != lookupID || event.Data.Key != "session-1" || event.Data.Token != "secret" {
+		if event.Data.Key != "session-1" || event.Data.Token != "secret" {
 			t.Fatalf("unexpected found event: %+v", event.Data)
 		}
 	case <-ctx.Done():
@@ -84,18 +79,16 @@ func TestLookupMissingPublishesNotFoundEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer notFound.Close()
-
-	requestID := uuid.New()
 	if err := v.VaultTokenRequestedEvents.Publish(stream.Event[VaultTokenRequestedEvent]{
 		Name: "vault.token.requested",
-		Data: VaultTokenRequestedEvent{RequestID: requestID, Key: "missing"},
+		Data: VaultTokenRequestedEvent{Key: "missing"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case event := <-notFound.Events():
-		if event.Data.RequestID != requestID || event.Data.Key != "missing" {
+		if event.Data.Key != "missing" {
 			t.Fatalf("unexpected not-found event: %+v", event.Data)
 		}
 	case <-ctx.Done():
