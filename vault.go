@@ -1,4 +1,4 @@
-// Package vault implements a small in-memory token vault over pulsyflux-stream.
+// Package vault implements an in-memory token vault over pulsyflux-stream.
 package vault
 
 import (
@@ -13,45 +13,50 @@ import (
 
 const subscriberBuffer = 32
 
-var (
-	ErrNilEventChannel = errors.New("vault: nil event channel")
-	ErrInvalidRequest  = errors.New("vault: request ID and key are required")
-)
+var ErrNilEventChannel = errors.New("vault: nil event channel")
 
-type StoreRequest struct {
+// VaultTokenStoreRequestedEvent asks the vault to store Token under Key.
+type VaultTokenStoreRequestedEvent struct {
 	RequestID uuid.UUID
 	Key       string
 	Token     string
 }
 
-type LookupRequest struct {
+// VaultTokenStoredEvent confirms that a store request was processed.
+type VaultTokenStoredEvent struct {
 	RequestID uuid.UUID
 	Key       string
 }
 
-type Stored struct {
+// VaultTokenRequestedEvent asks the vault to look up the token associated with Key.
+// This is the request event consumed by pulsyflux-auth-stream.
+type VaultTokenRequestedEvent struct {
 	RequestID uuid.UUID
 	Key       string
 }
 
-type Found struct {
+// VaultTokenFoundEvent is the successful lookup response consumed by auth.
+type VaultTokenFoundEvent struct {
 	RequestID uuid.UUID
 	Key       string
 	Token     string
 }
 
-type NotFound struct {
+// VaultTokenNotFoundEvent is emitted when a requested key is absent.
+type VaultTokenNotFoundEvent struct {
 	RequestID uuid.UUID
 	Key       string
 }
 
-// Vault owns an in-memory key/token map. The shared EventChannel is not closed by Vault.Close.
+// Vault owns an in-memory key/token map and its request subscriptions.
+// Its EventChannel and registered streams are shared resources and are not
+// closed by Vault.Close.
 type Vault struct {
-	StoreRequests  *stream.Stream[StoreRequest]
-	LookupRequests *stream.Stream[LookupRequest]
-	StoredEvents   *stream.Stream[Stored]
-	FoundEvents    *stream.Stream[Found]
-	NotFoundEvents *stream.Stream[NotFound]
+	VaultTokenStoreRequestedEvents *stream.Stream[VaultTokenStoreRequestedEvent]
+	VaultTokenStoredEvents          *stream.Stream[VaultTokenStoredEvent]
+	VaultTokenRequestedEvents       *stream.Stream[VaultTokenRequestedEvent]
+	VaultTokenFoundEvents           *stream.Stream[VaultTokenFoundEvent]
+	VaultTokenNotFoundEvents        *stream.Stream[VaultTokenNotFoundEvent]
 
 	mu     sync.RWMutex
 	values map[string]string
@@ -59,8 +64,9 @@ type Vault struct {
 	wg     sync.WaitGroup
 }
 
-// New registers five typed streams on channel and starts the request handlers.
-// Those event types must not already be registered on the supplied channel.
+// New registers the vault's typed domain-event streams on channel and starts
+// processing store and lookup requests. Each event type must be unregistered
+// on the supplied channel before construction.
 func New(ctx context.Context, channel *stream.EventChannel) (*Vault, error) {
 	if channel == nil {
 		return nil, ErrNilEventChannel
@@ -70,78 +76,132 @@ func New(ctx context.Context, channel *stream.EventChannel) (*Vault, error) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 
-	storeRequests, err := stream.New[StoreRequest](channel, subscriberBuffer)
-	if err != nil { cancel(); return nil, err }
-	lookupRequests, err := stream.New[LookupRequest](channel, subscriberBuffer)
-	if err != nil { cancel(); return nil, err }
-	storedEvents, err := stream.New[Stored](channel, subscriberBuffer)
-	if err != nil { cancel(); return nil, err }
-	foundEvents, err := stream.New[Found](channel, subscriberBuffer)
-	if err != nil { cancel(); return nil, err }
-	notFoundEvents, err := stream.New[NotFound](channel, subscriberBuffer)
-	if err != nil { cancel(); return nil, err }
+	storeRequests, err := stream.New[VaultTokenStoreRequestedEvent](channel, subscriberBuffer)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	storedEvents, err := stream.New[VaultTokenStoredEvent](channel, subscriberBuffer)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	lookupRequests, err := stream.New[VaultTokenRequestedEvent](channel, subscriberBuffer)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	foundEvents, err := stream.New[VaultTokenFoundEvent](channel, subscriberBuffer)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	notFoundEvents, err := stream.New[VaultTokenNotFoundEvent](channel, subscriberBuffer)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	v := &Vault{
-		StoreRequests: storeRequests, LookupRequests: lookupRequests,
-		StoredEvents: storedEvents, FoundEvents: foundEvents,
-		NotFoundEvents: notFoundEvents, values: make(map[string]string), cancel: cancel,
+		VaultTokenStoreRequestedEvents: storeRequests,
+		VaultTokenStoredEvents:          storedEvents,
+		VaultTokenRequestedEvents:       lookupRequests,
+		VaultTokenFoundEvents:           foundEvents,
+		VaultTokenNotFoundEvents:        notFoundEvents,
+		values:                          make(map[string]string),
+		cancel:                          cancel,
 	}
+
 	storeSub, err := storeRequests.Subscribe(ctx)
-	if err != nil { cancel(); return nil, err }
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	lookupSub, err := lookupRequests.Subscribe(ctx)
-	if err != nil { storeSub.Close(); cancel(); return nil, err }
+	if err != nil {
+		storeSub.Close()
+		cancel()
+		return nil, err
+	}
 
 	v.wg.Add(2)
-	go v.handleStores(ctx, storeSub)
-	go v.handleLookups(ctx, lookupSub)
+	go v.handleStoreRequests(ctx, storeSub)
+	go v.handleLookupRequests(ctx, lookupSub)
 	return v, nil
 }
 
-func (v *Vault) handleStores(ctx context.Context, sub *stream.Subscription[StoreRequest]) {
+func (v *Vault) handleStoreRequests(ctx context.Context, sub *stream.Subscription[VaultTokenStoreRequestedEvent]) {
 	defer v.wg.Done()
 	defer sub.Close()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-sub.Events():
-			if !ok { return }
-			req := event.Data
-			if req.RequestID == uuid.Nil || strings.TrimSpace(req.Key) == "" { continue }
-			v.mu.Lock()
-			v.values[req.Key] = req.Token
-			v.mu.Unlock()
-			_ = v.StoredEvents.Publish(stream.Event[Stored]{Name: "vault.stored", Data: Stored{RequestID: req.RequestID, Key: req.Key}})
-		}
-	}
-}
 
-func (v *Vault) handleLookups(ctx context.Context, sub *stream.Subscription[LookupRequest]) {
-	defer v.wg.Done()
-	defer sub.Close()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case event, ok := <-sub.Events():
-			if !ok { return }
-			req := event.Data
-			if req.RequestID == uuid.Nil || strings.TrimSpace(req.Key) == "" { continue }
-			v.mu.RLock()
-			token, found := v.values[req.Key]
-			v.mu.RUnlock()
-			if found {
-				_ = v.FoundEvents.Publish(stream.Event[Found]{Name: "vault.found", Data: Found{RequestID: req.RequestID, Key: req.Key, Token: token}})
-			} else {
-				_ = v.NotFoundEvents.Publish(stream.Event[NotFound]{Name: "vault.not_found", Data: NotFound{RequestID: req.RequestID, Key: req.Key}})
+			if !ok {
+				return
 			}
+			request := event.Data
+			if request.RequestID == uuid.Nil || strings.TrimSpace(request.Key) == "" {
+				continue
+			}
+
+			v.mu.Lock()
+			v.values[request.Key] = request.Token
+			v.mu.Unlock()
+
+			_ = v.VaultTokenStoredEvents.Publish(stream.Event[VaultTokenStoredEvent]{
+				Name: "vault.token.stored",
+				Data: VaultTokenStoredEvent{RequestID: request.RequestID, Key: request.Key},
+			})
 		}
 	}
 }
 
-// Close stops the handlers without closing streams owned by the shared channel.
+func (v *Vault) handleLookupRequests(ctx context.Context, sub *stream.Subscription[VaultTokenRequestedEvent]) {
+	defer v.wg.Done()
+	defer sub.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-sub.Events():
+			if !ok {
+				return
+			}
+			request := event.Data
+			if request.RequestID == uuid.Nil || strings.TrimSpace(request.Key) == "" {
+				continue
+			}
+
+			v.mu.RLock()
+			token, found := v.values[request.Key]
+			v.mu.RUnlock()
+
+			if found {
+				_ = v.VaultTokenFoundEvents.Publish(stream.Event[VaultTokenFoundEvent]{
+					Name: "vault.token.found",
+					Data: VaultTokenFoundEvent{RequestID: request.RequestID, Key: request.Key, Token: token},
+				})
+				continue
+			}
+
+			_ = v.VaultTokenNotFoundEvents.Publish(stream.Event[VaultTokenNotFoundEvent]{
+				Name: "vault.token.not_found",
+				Data: VaultTokenNotFoundEvent{RequestID: request.RequestID, Key: request.Key},
+			})
+		}
+	}
+}
+
+// Close stops the vault's owned subscriptions and processing loops. It does
+// not close the shared EventChannel or any registered streams.
 func (v *Vault) Close() {
-	if v == nil { return }
+	if v == nil {
+		return
+	}
 	v.cancel()
 	v.wg.Wait()
 }
