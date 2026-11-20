@@ -7,58 +7,72 @@ Read this file first when continuing work in a new session. It records the agree
 - Vault repository: https://github.com/gunesis-game/pulsyflux-vault-stream
 - Generic stream repository: https://github.com/gunesis-game/pulsyflux-stream
 - Related authentication repository: https://github.com/gunesis-game/pulsyflux-auth-stream
-- The vault package owns the in-memory token store and typed vault request/response events.
+- The vault package owns the in-memory token store and typed vault domain events.
 - `pulsyflux-stream` owns generic typed event delivery. Do not duplicate its transport or registry.
-- Inspect the actual pinned dependency version and current `pulsyflux-stream` API before coding. Do not rely on old API assumptions or guess method signatures.
+- Inspect the actual pinned dependency version and current `pulsyflux-stream` API before coding.
 
 ## Product scope
 
 - Keep this repository a small event-driven vault component.
 - The current implementation is an in-memory key-to-token map.
 - Do not add a direct HashiCorp Vault SDK, network client, database, persistence layer, encryption scheme, expiry policy, authorization system, or unrelated authentication mechanisms unless explicitly requested.
-- The authentication component communicates with this component through typed request and response events. Do not introduce direct dependencies on authentication internals.
+- Authentication communicates with this component through the typed vault events defined here. Do not introduce direct dependencies on authentication internals.
 
-## Public API and ownership
+## Event naming convention — mandatory
 
-The current public API is:
+Every domain payload used as `stream.Stream[T]` or `stream.Event[T]` MUST be a named event type with the `Event` suffix. Do not use generic nouns or request/result structs such as `StoreRequest`, `LookupRequest`, `Stored`, `Found`, or `NotFound` as stream payload types.
+
+Use explicit domain names that describe the event and its direction. Keep the Go type name, stream field name, and event envelope name semantically aligned.
+
+## Public API and event contract
+
+The public API is:
 
 - `New(ctx context.Context, channel *stream.EventChannel) (*Vault, error)`
 - `(*Vault).Close()`
-- Typed event payloads: `StoreRequest`, `LookupRequest`, `Stored`, `Found`, and `NotFound`.
-- Typed stream fields on `Vault`: `StoreRequests`, `LookupRequests`, `StoredEvents`, `FoundEvents`, and `NotFoundEvents`.
+- Typed event payloads listed below.
+- Typed stream fields on `Vault` listed below.
 
-The constructor registers the five vault-specific typed streams on the supplied shared `EventChannel` using `stream.New[T](channel, bufferSize)`. These event types must not already be registered on that channel. Do not silently create a replacement channel: callers must share the same in-process channel instance.
+### Events published to the vault
 
-Do not close the shared `EventChannel` or its streams from `Vault.Close()`; other components may use them. Close only subscriptions and resources owned by the vault instance.
+- `VaultTokenStoreRequestedEvent`: `RequestID uuid.UUID`, `Key string`, `Token string`. Requests storing a token under a key.
+- `VaultTokenRequestedEvent`: `RequestID uuid.UUID`, `Key string`. Requests looking up a token by key. This is the shared auth-to-vault lookup contract.
 
-## Typed event contract
+### Events published by the vault
 
-All communication is through typed domain events. Do not publish untyped strings or boolean decisions.
+- `VaultTokenStoredEvent`: `RequestID uuid.UUID`, `Key string`. Confirms the store operation.
+- `VaultTokenFoundEvent`: `RequestID uuid.UUID`, `Key string`, `Token string`. Successful lookup response. This is consumed by auth.
+- `VaultTokenNotFoundEvent`: `RequestID uuid.UUID`, `Key string`. Missing lookup response. This is consumed by auth.
 
-Request events:
+The auth integration names are intentionally exact and must remain stable:
+`VaultTokenRequestedEvent`, `VaultTokenFoundEvent`, and `VaultTokenNotFoundEvent`.
+Each includes a `RequestID` to correlate concurrent requests. Auth must subscribe to found/not-found responses and publish lookup requests using the same request ID. Do not correlate by arrival order or assume the next response belongs to the most recent request.
 
-- `StoreRequest`: `RequestID`, `Key`, and `Token`. Stores the token under the supplied key.
-- `LookupRequest`: `RequestID` and `Key`. Requests the token associated with the key.
+The request ID must be non-zero and the key must be non-empty. Callers must subscribe to response streams before publishing requests. Never log raw tokens, include them in errors, or expose them in event payloads that do not require the token. A found token is not automatically an authenticated/valid token; verification policy belongs to auth.
 
-Response events:
+### Stream ownership
 
-- `Stored`: confirms processing of a store request and carries its `RequestID` and `Key`.
-- `Found`: carries the matching `RequestID`, `Key`, and token.
-- `NotFound`: carries the `RequestID` and `Key` when no value exists.
+The `Vault` exposes these typed streams:
 
-A request ID must be non-zero and a key must be non-empty. Callers must subscribe to the appropriate response stream before publishing requests and correlate responses by `RequestID`.
+- `VaultTokenStoreRequestedEvents`: input `Stream[VaultTokenStoreRequestedEvent]`.
+- `VaultTokenStoredEvents`: output `Stream[VaultTokenStoredEvent]`.
+- `VaultTokenRequestedEvents`: input `Stream[VaultTokenRequestedEvent]`.
+- `VaultTokenFoundEvents`: output `Stream[VaultTokenFoundEvent]`.
+- `VaultTokenNotFoundEvents`: output `Stream[VaultTokenNotFoundEvent]`.
 
-Never log raw tokens, include them in errors, or expose them in response types that do not require the token. Do not treat a token as valid merely because it was found; authentication/verification policy belongs to the authentication component and its agreed contract.
+The constructor registers the five event streams on the supplied shared `EventChannel` using `stream.New[T](channel, bufferSize)`. These event types must not already be registered on that channel. Do not silently create a replacement channel: all participants must share the same in-process channel instance.
+
+Do not close the shared `EventChannel` or registered streams from `Vault.Close()`; other components may use them. Close only subscriptions and resources owned by this vault instance.
 
 ## Event processing and lifecycle
 
-- `New(ctx, channel)` registers the typed streams, subscribes to store and lookup request streams, and starts the processing loops.
-- Store requests update the in-memory map under a mutex and publish a `Stored` response.
-- Lookup requests read the map under a read lock and publish either `Found` or `NotFound`.
+- `New(ctx, channel)` registers the typed domain-event streams, subscribes to store and lookup request streams, and starts processing loops.
+- Store requests update the in-memory map under a mutex and publish `VaultTokenStoredEvent`.
+- Lookup requests read the map under a read lock and publish exactly one of `VaultTokenFoundEvent` or `VaultTokenNotFoundEvent`.
 - Respect context cancellation, closed subscription channels, and subscription cleanup.
-- `Close()` must be safe for a nil receiver and stop the owned processing loops without closing shared streams.
+- `Close()` must be safe for a nil receiver and stop owned processing loops without closing shared streams.
 - Do not add callbacks, function-valued handlers, generic dispatchers, central type switches, or public helper APIs without explicit direction.
-- Handle and surface publish failures deliberately. Do not silently lose response events in future revisions; consider a clear error-reporting/lifecycle strategy without changing the event contract unexpectedly.
+- Handle publish failures deliberately; do not silently lose response events in future revisions. Any error-reporting change must preserve the agreed event contract unless explicitly approved.
 - Avoid goroutine leaks and races. Keep the map concurrency-safe.
 
 ## Storage and security limitations
@@ -84,7 +98,7 @@ Any future addition of persistence, encryption, expiry, or distributed transport
 
 1. Inspect the current branch, files, recent commits, and open pull requests before editing.
 2. Inspect the pinned `pulsyflux-stream` dependency and verify `EventChannel`, stream registration, `Subscribe(ctx)`, subscription channels, event envelopes, and `Publish` signatures.
-3. Preserve the typed request/response contract and request correlation.
+3. Preserve the event-suffixed type naming convention and the exact auth integration event names/payload correlation.
 4. Add tests for storing, successful lookup, missing lookup, invalid requests, concurrent access, cancellation, closed streams, publish failures, and cleanup as appropriate.
 5. Run `gofmt`, `go test -race ./...`, `go vet ./...`, and `go build ./...`.
 6. Verify exported symbols and package documentation. Do not claim tests pass unless they have actually run successfully.
@@ -95,7 +109,8 @@ Any future addition of persistence, encryption, expiry, or distributed transport
 ## Collaboration preferences
 
 - Keep changes focused and follow the owner's Go design and corrections literally.
-- Prefer typed domain events and explicit request correlation.
-- Avoid callbacks, anonymous callback handlers, generic handler layers, or unrelated abstractions.
+- Use typed, event-suffixed domain payloads and explicit request correlation.
+- Keep the auth-to-vault integration event names stable.
+- Avoid callbacks, anonymous callback handlers, generic handler layers, and unrelated abstractions.
 - Ask one concise clarification only when a material contract cannot be determined from repository code or this guide.
 - Never claim code was tested, committed, pushed, or released unless the action succeeded and was verified.
