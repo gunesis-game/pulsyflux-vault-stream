@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+
 	"github.com/gunesis-game/pulsyflux-stream"
 )
 
