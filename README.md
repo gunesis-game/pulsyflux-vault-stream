@@ -13,7 +13,7 @@ The vault exposes the three event types required by
 - `VaultTokenFoundEvent` — vault publishes this when the key exists; includes the token.
 - `VaultTokenNotFoundEvent` — vault publishes this when the key does not exist.
 
-All three carry a `RequestID` so auth can correlate concurrent requests and responses. They also carry `Key`; the found response additionally carries `Token`.
+These events are related through the shared `EventChannel` used by auth and vault. They carry `Key`; the found response additionally carries `Token`. This event contract does not use a per-request correlation identifier.
 
 The vault also exposes its own store lifecycle events:
 
@@ -36,18 +36,15 @@ found, err := vault.VaultTokenFoundEvents.Subscribe(ctx)
 if err != nil {
     return err
 }
-
-requestID := uuid.New()
 err = vault.VaultTokenRequestedEvents.Publish(stream.Event[vaultstream.VaultTokenRequestedEvent]{
     Name: "vault.token.requested",
     Data: vaultstream.VaultTokenRequestedEvent{
-        RequestID: requestID,
         Key:       "session-1",
     },
 })
 ```
 
-Subscribe to the response streams before publishing requests so responses are not missed. Match each response using `RequestID`.
+Subscribe to the response streams before publishing requests so responses are not missed. The event streams are related through their shared `EventChannel`.
 
 ## Scope and security
 
