@@ -9,40 +9,96 @@ import (
 	"github.com/gunesis-game/pulsyflux-stream"
 )
 
-func TestStoreAndLookup(t *testing.T) {
+func TestStoreAndLookupEvents(t *testing.T) {
 	channel := stream.NewEventChannel()
 	v, err := New(context.Background(), channel)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer v.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	stored, err := v.StoredEvents.Subscribe(ctx)
-	if err != nil { t.Fatal(err) }
+
+	stored, err := v.VaultTokenStoredEvents.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer stored.Close()
-	found, err := v.FoundEvents.Subscribe(ctx)
-	if err != nil { t.Fatal(err) }
+
+	found, err := v.VaultTokenFoundEvents.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer found.Close()
 
 	storeID := uuid.New()
-	if err := v.StoreRequests.Publish(stream.Event[StoreRequest]{
-		Name: "vault.store", Data: StoreRequest{RequestID: storeID, Key: "session-1", Token: "secret"},
-	}); err != nil { t.Fatal(err) }
+	if err := v.VaultTokenStoreRequestedEvents.Publish(stream.Event[VaultTokenStoreRequestedEvent]{
+		Name: "vault.token.store_requested",
+		Data: VaultTokenStoreRequestedEvent{RequestID: storeID, Key: "session-1", Token: "secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	select {
 	case event := <-stored.Events():
-		if event.Data.RequestID != storeID || event.Data.Key != "session-1" { t.Fatalf("unexpected stored event: %+v", event.Data) }
+		if event.Data.RequestID != storeID || event.Data.Key != "session-1" {
+			t.Fatalf("unexpected stored event: %+v", event.Data)
+		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for stored event")
 	}
 
+	// This is the request/response contract used by pulsyflux-auth-stream.
 	lookupID := uuid.New()
-	if err := v.LookupRequests.Publish(stream.Event[LookupRequest]{
-		Name: "vault.lookup", Data: LookupRequest{RequestID: lookupID, Key: "session-1"},
-	}); err != nil { t.Fatal(err) }
+	if err := v.VaultTokenRequestedEvents.Publish(stream.Event[VaultTokenRequestedEvent]{
+		Name: "vault.token.requested",
+		Data: VaultTokenRequestedEvent{RequestID: lookupID, Key: "session-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	select {
 	case event := <-found.Events():
-		if event.Data.RequestID != lookupID || event.Data.Token != "secret" { t.Fatalf("unexpected found event: %+v", event.Data) }
+		if event.Data.RequestID != lookupID || event.Data.Key != "session-1" || event.Data.Token != "secret" {
+			t.Fatalf("unexpected found event: %+v", event.Data)
+		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for found event")
+	}
+}
+
+func TestLookupMissingPublishesNotFoundEvent(t *testing.T) {
+	channel := stream.NewEventChannel()
+	v, err := New(context.Background(), channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	notFound, err := v.VaultTokenNotFoundEvents.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer notFound.Close()
+
+	requestID := uuid.New()
+	if err := v.VaultTokenRequestedEvents.Publish(stream.Event[VaultTokenRequestedEvent]{
+		Name: "vault.token.requested",
+		Data: VaultTokenRequestedEvent{RequestID: requestID, Key: "missing"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case event := <-notFound.Events():
+		if event.Data.RequestID != requestID || event.Data.Key != "missing" {
+			t.Fatalf("unexpected not-found event: %+v", event.Data)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for not-found event")
 	}
 }
