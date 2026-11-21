@@ -8,6 +8,18 @@ import (
 	"github.com/gunesis-game/pulsyflux-stream"
 )
 
+func makeEvent[T any](t *testing.T, data T) stream.Event[T] {
+	t.Helper()
+	event, err := stream.NewEvent[T](stream.NewRedactionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := event.SetData(data); err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
 func TestStoreAndLookupEvents(t *testing.T) {
 	channel := stream.NewEventChannel()
 	v, err := New(context.Background(), channel)
@@ -30,16 +42,13 @@ func TestStoreAndLookupEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer found.Close()
-	if err := v.VaultTokenStoreRequestedEvents.Publish(stream.Event[VaultTokenStoreRequestedEvent]{
-		Name: "vault.token.store_requested",
-		Data: VaultTokenStoreRequestedEvent{Key: "session-1", Token: "secret"},
-	}); err != nil {
+	if err := v.VaultTokenStoreRequestedEvents.Publish(makeEvent(t, VaultTokenStoreRequestedEvent{Key: "session-1", Token: "secret"})); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case event := <-stored.Events():
-		if event.Data.Key != "session-1" {
+		if event.Data().Key != "session-1" {
 			t.Fatalf("unexpected stored event: %+v", event.Data())
 		}
 	case <-ctx.Done():
@@ -47,16 +56,13 @@ func TestStoreAndLookupEvents(t *testing.T) {
 	}
 
 	// This is the request/response contract used by pulsyflux-auth-stream.
-	if err := v.VaultTokenRequestedEvents.Publish(stream.Event[VaultTokenRequestedEvent]{
-		Name: "vault.token.requested",
-		Data: VaultTokenRequestedEvent{Key: "session-1"},
-	}); err != nil {
+	if err := v.VaultTokenRequestedEvents.Publish(makeEvent(t, VaultTokenRequestedEvent{Key: "session-1"})); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case event := <-found.Events():
-		if event.Data.Key != "session-1" || event.Data.Token != "secret" {
+		if event.Data().Key != "session-1" || event.Data().Token != "secret" {
 			t.Fatalf("unexpected found event: %+v", event.Data())
 		}
 	case <-ctx.Done():
@@ -80,16 +86,13 @@ func TestLookupMissingPublishesNotFoundEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer notFound.Close()
-	if err := v.VaultTokenRequestedEvents.Publish(stream.Event[VaultTokenRequestedEvent]{
-		Name: "vault.token.requested",
-		Data: VaultTokenRequestedEvent{Key: "missing"},
-	}); err != nil {
+	if err := v.VaultTokenRequestedEvents.Publish(makeEvent(t, VaultTokenRequestedEvent{Key: "missing"})); err != nil {
 		t.Fatal(err)
 	}
 
 	select {
 	case event := <-notFound.Events():
-		if event.Data.Key != "missing" {
+		if event.Data().Key != "missing" {
 			t.Fatalf("unexpected not-found event: %+v", event.Data())
 		}
 	case <-ctx.Done():
