@@ -174,7 +174,7 @@ func (v *Vault) handleLookupRequests(ctx context.Context, sub *stream.Subscripti
 			if !ok {
 				return
 			}
-			request := event.Data
+			request := event.Data()
 			if strings.TrimSpace(request.Key) == "" {
 				continue
 			}
