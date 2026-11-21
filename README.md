@@ -36,12 +36,14 @@ found, err := vault.VaultTokenFoundEvents.Subscribe(ctx)
 if err != nil {
     return err
 }
-err = vault.VaultTokenRequestedEvents.Publish(stream.Event[vaultstream.VaultTokenRequestedEvent]{
-    Name: "vault.token.requested",
-    Data: vaultstream.VaultTokenRequestedEvent{
-        Key:       "session-1",
-    },
-})
+request, err := stream.NewEvent[vaultstream.VaultTokenRequestedEvent](stream.NewRedactionPolicy())
+if err != nil {
+    return err
+}
+if err := request.SetData(vaultstream.VaultTokenRequestedEvent{Key: "session-1"}); err != nil {
+    return err
+}
+err = vault.VaultTokenRequestedEvents.Publish(request)
 ```
 
 Subscribe to the response streams before publishing requests so responses are not missed. The event streams are related through their shared `EventChannel`.
