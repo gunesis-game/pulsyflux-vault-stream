@@ -40,7 +40,7 @@ func TestStoreAndLookupEvents(t *testing.T) {
 	select {
 	case event := <-stored.Events():
 		if event.Data.Key != "session-1" {
-			t.Fatalf("unexpected stored event: %+v", event.Data)
+			t.Fatalf("unexpected stored event: %+v", event.Data())
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for stored event")
@@ -57,7 +57,7 @@ func TestStoreAndLookupEvents(t *testing.T) {
 	select {
 	case event := <-found.Events():
 		if event.Data.Key != "session-1" || event.Data.Token != "secret" {
-			t.Fatalf("unexpected found event: %+v", event.Data)
+			t.Fatalf("unexpected found event: %+v", event.Data())
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for found event")
@@ -90,7 +90,7 @@ func TestLookupMissingPublishesNotFoundEvent(t *testing.T) {
 	select {
 	case event := <-notFound.Events():
 		if event.Data.Key != "missing" {
-			t.Fatalf("unexpected not-found event: %+v", event.Data)
+			t.Fatalf("unexpected not-found event: %+v", event.Data())
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for not-found event")
