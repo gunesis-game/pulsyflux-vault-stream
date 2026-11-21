@@ -58,6 +58,18 @@ type Vault struct {
 	wg     sync.WaitGroup
 }
 
+// publishEvent constructs a typed event using pulsyflux-stream's Event[T] API.
+func publishEvent[T any](target *stream.Stream[T], data T) error {
+	event, err := stream.NewEvent[T](stream.NewRedactionPolicy())
+	if err != nil {
+		return err
+	}
+	if err := event.SetData(data); err != nil {
+		return err
+	}
+	return target.Publish(event)
+}
+
 // New registers the vault's typed domain-event streams on channel and starts
 // processing store and lookup requests. Each event type must be unregistered
 // on the supplied channel before construction.
@@ -136,7 +148,7 @@ func (v *Vault) handleStoreRequests(ctx context.Context, sub *stream.Subscriptio
 			if !ok {
 				return
 			}
-			request := event.Data
+			request := event.Data()
 			if strings.TrimSpace(request.Key) == "" {
 				continue
 			}
@@ -145,10 +157,7 @@ func (v *Vault) handleStoreRequests(ctx context.Context, sub *stream.Subscriptio
 			v.values[request.Key] = request.Token
 			v.mu.Unlock()
 
-			_ = v.VaultTokenStoredEvents.Publish(stream.Event[VaultTokenStoredEvent]{
-				Name: "vault.token.stored",
-				Data: VaultTokenStoredEvent{Key: request.Key},
-			})
+			_ = publishEvent(v.VaultTokenStoredEvents, VaultTokenStoredEvent{Key: request.Key})
 		}
 	}
 }
@@ -175,17 +184,11 @@ func (v *Vault) handleLookupRequests(ctx context.Context, sub *stream.Subscripti
 			v.mu.RUnlock()
 
 			if found {
-				_ = v.VaultTokenFoundEvents.Publish(stream.Event[VaultTokenFoundEvent]{
-					Name: "vault.token.found",
-					Data: VaultTokenFoundEvent{Key: request.Key, Token: token},
-				})
+				_ = publishEvent(v.VaultTokenFoundEvents, VaultTokenFoundEvent{Key: request.Key, Token: token})
 				continue
 			}
 
-			_ = v.VaultTokenNotFoundEvents.Publish(stream.Event[VaultTokenNotFoundEvent]{
-				Name: "vault.token.not_found",
-				Data: VaultTokenNotFoundEvent{Key: request.Key},
-			})
+			_ = publishEvent(v.VaultTokenNotFoundEvents, VaultTokenNotFoundEvent{Key: request.Key})
 		}
 	}
 }
